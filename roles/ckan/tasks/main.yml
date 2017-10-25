@@ -9,6 +9,9 @@
     - python-dev
     - python-pip
     - python-virtualenv
+    - python-psycopg2
+    - python-setuptools
+    - redis-server
 
 - name: Upgrade python-pip
   command: pip install --upgrade pip
@@ -17,13 +20,17 @@
   when: ckan_user is defined
   user: name={{ ckan_user.name }} system={{ ckan_user.system }} createhome=yes home={{ ckan_user.home_path }} shell={{ ckan_user.shell }} comment="{{ckan_user.description}}"
 
+- name: Install setuptools
+  become_user: "{{ ckan_user.name }}"
+  pip: name=setuptools version=36.6.0 virtualenv={{ ckan_virtualenv }} state=present
+
+- name: Install paster
+  become_user: "{{ ckan_user.name }}"
+  pip: name=paster virtualenv={{ ckan_virtualenv }} state=present
+
 - name: Install ckan
   become_user: "{{ ckan_user.name }}"
   pip: name="{{ckan_src_url}}" virtualenv={{ ckan_virtualenv }} state=present
-
-- name:  Install ckan python modules
-  become_user: "{{ ckan_user.name }}"
-  pip: requirements="{{ ckan_virtualenv }}/src/ckan/requirements.txt" virtualenv={{ ckan_virtualenv }} state=present
 
 - name: Create ckan postgresql user
   become_user: postgres
@@ -42,12 +49,16 @@
 - name: Copy ckan production.ini config file
   template: src="production-{{ ckan_version }}.ini.j2" dest="{{ ckan_conf_dir }}/production.ini" owner={{ ckan_user.name }} group={{ ckan_user.name }} mode=0644
   notify: reload apache2
+  tags: postgresql
+
+- name: Initialize ckan database
+  command: "/usr/local/bin/paster db init -c {{ ckan_conf_dir}}/production.ini"
+  tags: postgresql
 
 - name: Create ckan data uploads dir.
   file: path={{ ckan_storage_path }} owner=www-data group={{ ckan_user.name }} mode=0775 state=directory
-
 - name: Generate beaker secret token
-  command: "{{ ckan_virtualenv }}/bin/python -c 'from paste.script.util import secret; print secret.secret_string()'"
+  command: "{{ ckan_virtualenv }}/bin/python -c 'import os; import binascii; binascii.hexlify(os.urandom(24))'"
   register: beaker_secret_token
 
 - name: Set beaker.session.secret in production.ini
@@ -55,7 +66,7 @@
   when: beaker_secret_token is defined
 
 - name: Generate ckan aplication instance UUID
-  command: "{{ ckan_virtualenv }}/bin/python -c 'from paste.script.util import uuid; print uuid.uuid4()'"
+  command: "{{ ckan_virtualenv }}/bin/python -c 'import uuid; print str(uuid.uuid4())'"
   register: app_instance_uuid
 
 - name: Set app_instance_uuid in production.ini
@@ -72,14 +83,6 @@
   notify: reload solr
   with_items: "{{ solr_cores }}"
   tags: solr
-
-## TODO: find a way of running paster & make it idempotent - maybe touch a file ??
-- name: Initialize ckan postgresql database
-  become_user: "{{ckan_user.name}}"
-  command: "{{ ckan_virtualenv }}/bin/paster --plugin=ckan db init -c {{ ckan_conf_dir }}/production.ini"
-#  command: "{{ ckan_virtualenv }}/bin/paster db init -c {{ ckan_conf_dir }}/production.ini"
-#  args:
-#    chdir: "{{ ckan_virtualenv }}/src/ckan"
 
 - name: Create apache2 default vhost for ckan
   template: src="apache/000-ckan-default.conf.j2" dest="/etc/apache2/sites-available/000-default.conf" owner=root group=root mode=0644

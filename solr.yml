@@ -3,7 +3,7 @@
 
 - hosts: solr
   become: yes
-  user: provisioning
+  user: root
   vars_files:
     - vars/all.yml
   roles:
